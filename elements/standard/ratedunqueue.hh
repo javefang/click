@@ -45,7 +45,6 @@ CLICK_DECLS
 class RatedUnqueue : public Element { public:
 
     RatedUnqueue();
-    ~RatedUnqueue();
 
     const char *class_name() const	{ return "RatedUnqueue"; }
     const char *port_count() const	{ return PORTS_1_1; }
@@ -54,6 +53,7 @@ class RatedUnqueue : public Element { public:
 
     int configure(Vector<String> &, ErrorHandler *);
     static int configure_helper(TokenBucket *tb, bool is_bandwidth, Element *elt, Vector<String> &conf, ErrorHandler *errh);
+    enum { tb_bandwidth_thresh = 131072 };
 
     bool can_live_reconfigure() const	{ return true; }
     int initialize(ErrorHandler *);
@@ -72,7 +72,6 @@ class RatedUnqueue : public Element { public:
     uint32_t _failed_pulls;
     uint32_t _empty_runs;
 
-    enum { tb_bandwidth_thresh = 131072 };
     enum { h_calls, h_rate };
 
     static String read_handler(Element *e, void *thunk);

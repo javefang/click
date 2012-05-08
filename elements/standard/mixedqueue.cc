@@ -24,10 +24,6 @@ MixedQueue::MixedQueue()
 {
 }
 
-MixedQueue::~MixedQueue()
-{
-}
-
 void *
 MixedQueue::cast(const char *n)
 {
@@ -46,7 +42,7 @@ MixedQueue::push(int port, Packet *p)
 	int h = _head, t = _tail, nt = next_i(t);
 	if (nt == h) {
 	    if (_drops == 0 && _capacity > 0)
-		click_chatter("%{element}: overflow", this);
+		click_chatter("%p{element}: overflow", this);
 	    _drops++;
 	    checked_output_push(1, p);
 	} else {
@@ -58,7 +54,7 @@ MixedQueue::push(int port, Packet *p)
 	int h = _head, t = _tail, ph = prev_i(h);
 	if (ph == t) {
 	    if (_drops == 0 && _capacity > 0)
-		click_chatter("%{element}: overflow", this);
+		click_chatter("%p{element}: overflow", this);
 	    _drops++;
 	    t = prev_i(t);
 	    oldp = _q[t];

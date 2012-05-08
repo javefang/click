@@ -531,7 +531,7 @@ Router::check_hookup_range(ErrorHandler *errh)
 	int before = errh->nerrors();
 	for (int p = 0; p < 2; ++p)
 	    if ((*cp)[p].port >= _elements[(*cp)[p].idx]->nports(p))
-		hookup_error((*cp)[p], p, "%<%{element}%> has no %s %d", errh);
+		hookup_error((*cp)[p], p, "%<%p{element}%> has no %s %d", errh);
 	if (errh->nerrors() != before)
 	    cp = remove_connection(cp);
 	else
@@ -557,7 +557,7 @@ Router::check_hookup_completeness(ErrorHandler *errh)
 		if (likely(last != _conn[ci][p]))
 		    last = _conn[ci][p];
 		else if (_elements[last.idx]->port_active(p, last.port))
-		    hookup_error(last, p, "illegal reuse of %<%{element}%> %s %d", errh, true);
+		    hookup_error(last, p, "illegal reuse of %<%p{element}%> %s %d", errh, true);
 	    }
 	}
 
@@ -577,7 +577,7 @@ Router::check_hookup_completeness(ErrorHandler *errh)
 		++cix;
 	    } else {
 		if (unlikely(conn != all))
-		    hookup_error(all, p, "%<%{element}%> %s %d unused", errh);
+		    hookup_error(all, p, "%<%p{element}%> %s %d unused", errh);
 		++all.port;
 	    }
     }
@@ -664,11 +664,11 @@ Router::processing_error(const Connection &c, bool aggie,
     const char *type1 = (processing_from == Element::VPUSH ? "push" : "pull");
     const char *type2 = (processing_from == Element::VPUSH ? "pull" : "push");
     if (!aggie)
-	errh->error("%<%{element}%> %s output %d connected to %<%{element}%> %s input %d",
+	errh->error("%<%p{element}%> %s output %d connected to %<%p{element}%> %s input %d",
 		    _elements[c[1].idx], type1, c[1].port,
 		    _elements[c[0].idx], type2, c[0].port);
     else
-	errh->error("agnostic %<%{element}%> in mixed context: %s input %d, %s output %d",
+	errh->error("agnostic %<%p{element}%> in mixed context: %s input %d, %s output %d",
 		    _elements[c[1].idx], type2, c[0].port, type1, c[1].port);
     return -1;
 }
@@ -850,9 +850,27 @@ Router::set_flow_code_override(int eindex, const String &flow_code)
     _flow_code_override.push_back(flow_code);
 }
 
+/** @brief Traverse the router configuration from one of @a e's ports.
+ * @param e element to start search
+ * @param isoutput true to search down from outputs, false to search up from
+ *   inputs
+ * @param port port (or -1 to search all ports)
+ * @param visitor RouterVisitor traversal object
+ * @return 0 on success, -1 in early router configuration stages
+ *
+ * Calls @a visitor ->@link RouterVisitor::visit visit() @endlink on each
+ * reachable port starting from a port on @a e.  Follows connections and
+ * traverses inside elements from port to port by Element::flow_code().  The
+ * visitor can stop a traversal path by returning false from visit().
+ *
+ * Equivalent to either visit_downstream() or visit_upstream(), depending on
+ * @a isoutput.
+ *
+ * @sa visit_downstream(), visit_upstream()
+ */
 int
-Router::visit_base(bool forward, Element *first_element, int first_port,
-		   RouterVisitor *visitor) const
+Router::visit(Element *first_element, bool forward, int first_port,
+	      RouterVisitor *visitor) const
 {
     if (!_have_connections || first_element->router() != this)
 	return -1;
@@ -951,7 +969,7 @@ int
 Router::downstream_elements(Element *e, int port, ElementFilter *filter, Vector<Element *> &result)
 {
     ElementFilterRouterVisitor visitor(filter, result);
-    return visit_base(true, e, port, &visitor);
+    return visit(e, true, port, &visitor);
 }
 
 /** @brief Search for elements upstream from @a e.
@@ -980,7 +998,7 @@ int
 Router::upstream_elements(Element *e, int port, ElementFilter *filter, Vector<Element *> &result)
 {
     ElementFilterRouterVisitor visitor(filter, result);
-    return visit_base(false, e, port, &visitor);
+    return visit(e, false, port, &visitor);
 }
 
 
@@ -995,7 +1013,7 @@ class Router::RouterContextErrh : public ContextErrorHandler { public:
     String decorate(const String &str) {
 	if (!context_printed()) {
 	    StringAccum sa;
-	    sa << _message << " %<%{element}%>:";
+	    sa << _message << " %<%p{element}%>:";
 	    String str = format(sa.c_str(), _element);
 	    if (String s = _element->router()->elandmark(_element->eindex()))
 		str = combine_anno(str, make_landmark_anno(s));

@@ -34,10 +34,6 @@ LinkUnqueue::LinkUnqueue()
 {
 }
 
-LinkUnqueue::~LinkUnqueue()
-{
-}
-
 void *
 LinkUnqueue::cast(const char *n)
 {
@@ -147,7 +143,7 @@ LinkUnqueue::run_task(Task *)
 	if (!_qhead)
 	    _qtail = 0;
 	p->set_next(0);
-	//click_chatter("%{timestamp}: RELEASE %{timestamp}", &now, &p->timestamp_anno());
+	//click_chatter("%p{timestamp}: RELEASE %p{timestamp}", &now, &p->timestamp_anno());
 	output(0).push(p);
 	Storage::_tail--;
 	worked = true;
@@ -162,7 +158,7 @@ LinkUnqueue::run_task(Task *)
 	    if (expiry2 < expiry)
 		expiry = expiry2;
 	}
-	//{ Timestamp diff = expiry - now; click_chatter("%{timestamp}: %{timestamp} > + %{timestamp}", &now, &expiry, &diff); }
+	//{ Timestamp diff = expiry - now; click_chatter("%p{timestamp}: %p{timestamp} > + %p{timestamp}", &now, &expiry, &diff); }
 	expiry -= Timer::adjustment();
 	if (expiry <= now) {
 	    // small delay, reschedule Task

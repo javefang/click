@@ -7,6 +7,7 @@
  * Copyright (c) 2001 Mazu Networks, Inc.
  * Copyright (c) 2005-2008 Regents of the University of California
  * Copyright (c) 2008-2009 Meraki, Inc.
+ * Copyright (c) 2012 Eddie Kohler
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -38,10 +39,10 @@ static const StaticNameDB::Entry instruction_entries[] = {
 #if CLICK_USERLEVEL
     { "append", Script::insn_append },
 #endif
-    { "end", Script::insn_end },
-    { "error", Script::insn_error },
-    { "errorq", Script::insn_errorq },
-    { "exit", Script::insn_exit },
+    { "end", (uint32_t) Script::insn_end },
+    { "error", (uint32_t) Script::insn_error },
+    { "errorq", (uint32_t) Script::insn_errorq },
+    { "exit", (uint32_t) Script::insn_exit },
     { "export", Script::insn_export },
     { "exportq", Script::insn_exportq },
     { "goto", Script::INSN_GOTO },
@@ -52,6 +53,8 @@ static const StaticNameDB::Entry instruction_entries[] = {
     { "pause", Script::INSN_WAIT_STEP },
     { "print", Script::INSN_PRINT },
     { "printn", Script::INSN_PRINTN },
+    { "printnq", Script::INSN_PRINTNQ },
+    { "printq", Script::INSN_PRINTQ },
     { "read", Script::INSN_READ },
     { "readq", Script::INSN_READQ },
     { "return", Script::INSN_RETURN },
@@ -61,7 +64,7 @@ static const StaticNameDB::Entry instruction_entries[] = {
 #endif
     { "set", Script::INSN_SET },
     { "setq", Script::insn_setq },
-    { "stop", Script::insn_stop },
+    { "stop", (uint32_t) Script::insn_stop },
     { "wait", Script::INSN_WAIT_PSEUDO },
     { "wait_for", Script::INSN_WAIT_TIME },
     { "wait_step", Script::INSN_WAIT_STEP },
@@ -113,10 +116,6 @@ Script::static_cleanup()
 
 Script::Script()
     : _type(type_active), _write_status(0), _timer(this), _cur_steps(0)
-{
-}
-
-Script::~Script()
 {
 }
 
@@ -243,7 +242,9 @@ Script::configure(Vector<String> &conf, ErrorHandler *errh)
 	case INSN_READ:
 	case INSN_READQ:
 	case INSN_PRINT:
+	case INSN_PRINTQ:
 	case INSN_PRINTN:
+	case INSN_PRINTNQ:
 #if CLICK_USERLEVEL
 	case insn_save:
 	case insn_append:
@@ -432,7 +433,9 @@ Script::step(int nsteps, int step_type, int njumps, ErrorHandler *errh)
 	}
 #endif
 	case INSN_PRINT:
-	case INSN_PRINTN: {
+	case INSN_PRINTQ:
+	case INSN_PRINTN:
+	case INSN_PRINTNQ: {
 	    String text = _args3[ipos];
 
 #if CLICK_USERLEVEL
@@ -457,13 +460,18 @@ Script::step(int nsteps, int step_type, int njumps, ErrorHandler *errh)
 	    int before = errh->nerrors();
 	    String result;
 	    if (text && (isalpha((unsigned char) text[0]) || text[0] == '@' || text[0] == '_')) {
-		result = cp_expand(text, expander);
-		result = HandlerCall::call_read(result, this, errh);
+		HandlerCall hc(cp_expand(text, expander));
+		int flags = HandlerCall::OP_READ + ((insn == INSN_PRINTQ || insn == INSN_PRINTNQ) ? HandlerCall::UNQUOTE_PARAM : 0);
+		if (hc.initialize(flags, this, errh) >= 0) {
+		    ContextErrorHandler c_errh(errh, "While calling %<%s%>:", hc.unparse().c_str());
+		    result = hc.call_read(&c_errh);
+		}
 	    } else
 		result = cp_unquote(cp_expand(text, expander, true));
 	    if (errh->nerrors() == before
 		&& (!result || result.back() != '\n')
-		&& insn != INSN_PRINTN)
+		&& insn != INSN_PRINTN
+		&& insn != INSN_PRINTNQ)
 		result += "\n";
 
 #if CLICK_USERLEVEL
@@ -558,7 +566,7 @@ Script::step(int nsteps, int step_type, int njumps, ErrorHandler *errh)
 
   done:
     if (njumps >= max_jumps) {
-	ErrorHandler::default_handler()->error("%{element}: too many jumps, giving up", this);
+	ErrorHandler::default_handler()->error("%p{element}: too many jumps, giving up", this);
 	_insn_pos = _insns.size();
 	_timer.unschedule();
     }
@@ -610,7 +618,7 @@ Script::run_timer(Timer *)
     // called when a timer expires
     assert(_insns[_insn_pos] == INSN_WAIT_TIME || _insns[_insn_pos] == INSN_INITIAL);
     ErrorHandler *errh = ErrorHandler::default_handler();
-    ContextErrorHandler cerrh(errh, "While executing %<%{element}%>:", this);
+    ContextErrorHandler cerrh(errh, "While executing %<%p{element}%>:", this);
     step(1, STEP_TIMER, 0, &cerrh);
     complete_step(0);
 }
@@ -619,7 +627,7 @@ void
 Script::push(int port, Packet *p)
 {
     ErrorHandler *errh = ErrorHandler::default_handler();
-    ContextErrorHandler cerrh(errh, "While executing %<%{element}%>:", this);
+    ContextErrorHandler cerrh(errh, "While executing %<%p{element}%>:", this);
 
     // This is slow, but it probably doesn't need to be fast.
     int i = find_variable(String::make_stable("input", 5), true);
@@ -643,7 +651,7 @@ Script::pull(int)
 	return 0;
 
     ErrorHandler *errh = ErrorHandler::default_handler();
-    ContextErrorHandler cerrh(errh, "While executing %<%{element}%>:", this);
+    ContextErrorHandler cerrh(errh, "While executing %<%p{element}%>:", this);
 
     // This is slow, but it probably doesn't need to be fast.
     int i = find_variable(String::make_stable("input", 5), true);
@@ -793,7 +801,279 @@ Script::step_handler(int op, String &str, Element *e, const Handler *h, ErrorHan
 #endif
 
 int
-Script::arithmetic_handler(int, String &str, Element *e, const Handler *h, ErrorHandler *errh)
+Script::arithmetic_handler(int, String &str, Element *, const Handler *h, ErrorHandler *errh)
+{
+    int what = (uintptr_t) h->read_user_data();
+
+    click_intmax_t accum = (what == ar_add || what == ar_sub ? 0 : 1), arg;
+    bool first = true;
+#if CLICK_USERLEVEL
+    double daccum = (what == ar_add || what == ar_sub ? 0 : 1), darg;
+    bool use_daccum = (what == ar_div || what == ar_idiv);
+#endif
+    while (1) {
+	String word = cp_shift_spacevec(str);
+	if (!word && cp_is_space(str))
+	    break;
+#if CLICK_USERLEVEL
+	if (!use_daccum && !IntArg().parse(word, arg)) {
+	    use_daccum = true;
+	    daccum = accum;
+	}
+	if (use_daccum && !DoubleArg().parse(word, darg))
+	    return errh->error("expected list of numbers");
+	if (use_daccum) {
+	    if (first)
+		daccum = darg;
+	    else if (what == ar_add)
+		daccum += darg;
+	    else if (what == ar_sub)
+		daccum -= darg;
+	    else if (what == ar_mul)
+		daccum *= darg;
+	    else
+		daccum /= darg;
+	    goto set_first;
+	}
+#else
+	if (!IntArg().parse(word, arg))
+	    return errh->error("expected list of numbers");
+#endif
+	if (first)
+	    accum = arg;
+	else if (what == ar_add)
+	    accum += arg;
+	else if (what == ar_sub)
+	    accum -= arg;
+	else if (what == ar_mul)
+	    accum *= arg;
+	else {
+#if CLICK_USERLEVEL || !HAVE_INT64_TYPES
+	    accum /= arg;
+#elif CLICK_LINUXMODULE && BITS_PER_LONG >= 64
+	    accum /= arg;
+#elif CLICK_LINUXMODULE && defined(do_div)
+	    if ((click_uintmax_t) arg > 0x7FFFFFFF) {
+		errh->warning("int64 divide truncated");
+		accum = 0;
+	    } else
+		accum = int_divide(accum, arg);
+#else
+	    // no int64 divide in the kernel
+	    if ((click_uintmax_t) accum > 0x7FFFFFFF
+		|| (click_uintmax_t) arg > 0x7FFFFFFF)
+		accum = 0;
+	    else
+		accum = (int32_t) accum / (int32_t) arg;
+#endif
+	}
+#if CLICK_USERLEVEL
+    set_first:
+#endif
+	first = false;
+    }
+#if CLICK_USERLEVEL
+    if (what == ar_idiv) {
+	use_daccum = false;
+	accum = (click_intmax_t) daccum;
+    }
+    str = (use_daccum ? String(daccum) : String(accum));
+#else
+    str = String(accum);
+#endif
+    return 0;
+}
+
+int
+Script::normal_error(int message, ErrorHandler *errh)
+{
+    static const char * const messages[] = {
+	"expected one number", "expected two numbers"
+    };
+    return errh->error(messages[message]);
+}
+
+int
+Script::modrem_handler(int, String &str, Element *, const Handler *h, ErrorHandler *errh)
+{
+    int what = (uintptr_t) h->read_user_data();
+    (void) what;
+
+    String astr = cp_shift_spacevec(str), bstr = cp_shift_spacevec(str);
+    click_intmax_t a, b;
+    if (str || !astr || !bstr)
+	return normal_error(error_two_numbers, errh);
+    if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b)) {
+#if CLICK_USERLEVEL
+	double da, db;
+	if (what == ar_mod || !DoubleArg().parse(astr, da)
+	    || !DoubleArg().parse(bstr, db))
+	    return normal_error(error_two_numbers, errh);
+	str = String(fmod(da, db));
+	return 0;
+#else
+	return normal_error(error_two_numbers, errh);
+#endif
+    } else {
+#if CLICK_LINUXMODULE
+	if ((int32_t) a != a || (int32_t) b != b)
+	    errh->warning("int64 divide truncated");
+	a = (int32_t) a % (int32_t) b;
+#else
+	a %= b;
+#endif
+	str = String(a);
+	return 0;
+    }
+}
+
+int
+Script::negabs_handler(int, String &str, Element *, const Handler *h, ErrorHandler *errh)
+{
+    int what = (uintptr_t) h->read_user_data();
+
+    click_intmax_t x;
+    if (!IntArg().parse(str, x)) {
+#if CLICK_USERLEVEL
+	double dx;
+	if (!DoubleArg().parse(str, dx))
+	    return normal_error(error_one_number, errh);
+	str = String(what == ar_neg ? -dx : fabs(dx));
+	return 0;
+#else
+	return normal_error(error_one_number, errh);
+#endif
+    } else {
+	str = String(what == ar_neg || x < 0 ? -x : x);
+	return 0;
+    }
+}
+
+int
+Script::compare_handler(int, String &str, Element *, const Handler *h, ErrorHandler *errh)
+{
+    int what = (uintptr_t) h->read_user_data();
+
+    String astr = cp_shift_spacevec(str), bstr = cp_shift_spacevec(str);
+    click_intmax_t a, b;
+    int comparison;
+    if (str || !astr || !bstr)
+	return normal_error(error_two_numbers, errh);
+#if CLICK_USERLEVEL
+    if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b)) {
+	double da, db;
+	if (!DoubleArg().parse(astr, da) || !DoubleArg().parse(bstr, db))
+	    goto compare_strings;
+	comparison = (da < db ? AR_LT : (da == db ? AR_EQ : AR_GT));
+	goto compare_return;
+    }
+#else
+    if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b))
+	goto compare_strings;
+#endif
+    comparison = (a < b ? AR_LT : (a == b ? AR_EQ : AR_GT));
+ compare_return:
+    str = BoolArg::unparse(what == comparison
+			   || (what >= AR_GE && what != comparison + 3));
+    return 0;
+ compare_strings:
+    a = String::compare(cp_unquote(astr), cp_unquote(bstr));
+    comparison = (a < 0 ? AR_LT : (a == 0 ? AR_EQ : AR_GT));
+    goto compare_return;
+}
+
+int
+Script::sprintf_handler(int, String &str, Element *, const Handler *, ErrorHandler *errh)
+{
+    String format = cp_unquote(cp_shift_spacevec(str));
+    const char *s = format.begin(), *pct, *end = format.end();
+    StringAccum result;
+    while ((pct = find(s, end, '%')) < end) {
+	result << format.substring(s, pct);
+	StringAccum pf;
+	// flags
+	do {
+	    pf << *pct++;
+	} while (pct < end && (*pct == '0' || *pct == '#'
+			       || *pct == '-' || *pct == ' ' || *pct == '+'));
+	// field width
+	int fw = 0;
+	if (pct < end && *pct == '*') {
+	    if (!IntArg().parse(cp_shift_spacevec(str), fw))
+		return errh->error("syntax error");
+	    pf << fw;
+	} else
+	    while (pct < end && *pct >= '0' && *pct <= '9')
+		pf << *pct++;
+	// precision
+	if (pct < end && *pct == '.') {
+	    pct++;
+	    if (pct < end && *pct == '*') {
+		if (!IntArg().parse(cp_shift_spacevec(str), fw) || fw < 0)
+		    return errh->error("syntax error");
+		pf << '.' << fw;
+	    } else if (pct < end && *pct >= '0' && *pct <= '9') {
+		pf << '.';
+		while (pct < end && *pct >= '0' && *pct <= '9')
+		    pf << *pct++;
+	    }
+	}
+	// width
+	int width_flag = 0;
+	while (1) {
+	    if (pct < end && *pct == 'h')
+		width_flag = 'h', pct++;
+	    else if (pct < end && *pct == 'l')
+		width_flag = (width_flag == 'l' ? 'q' : 'l'), pct++;
+	    else if (pct < end && (*pct == 'L' || *pct == 'q'))
+		width_flag = 'q', pct++;
+	    else
+		break;
+	}
+	// conversion
+	if (pct < end && (*pct == 'o' || *pct == 'x' || *pct == 'X' || *pct == 'u')) {
+	    click_uintmax_t ival;
+	    String x = cp_shift_spacevec(str);
+	    if (!IntArg().parse(x, ival))
+		return errh->error("syntax error");
+	    if (width_flag == 'h')
+		ival = (unsigned short) ival;
+	    else if (width_flag == 0 || width_flag == 'l')
+		ival = (unsigned long) ival;
+	    pf << CLICK_INTMAX_CVT << *pct;
+	    result << ErrorHandler::xformat(pf.c_str(), ival);
+	} else if (pct < end && (*pct == 'd' || *pct == 'i')) {
+	    click_intmax_t ival = 0;
+	    if (!IntArg().parse(cp_shift_spacevec(str), ival))
+		return errh->error("syntax error");
+	    if (width_flag == 'h')
+		ival = (short) ival;
+	    else if (width_flag == 0 || width_flag == 'l')
+		ival = (long) ival;
+	    pf << CLICK_INTMAX_CVT << *pct;
+	    result << ErrorHandler::xformat(pf.c_str(), ival);
+	} else if (pct < end && *pct == '%') {
+	    pf << '%';
+	    result << ErrorHandler::xformat(pf.c_str());
+	} else if (pct < end && *pct == 's') {
+	    String s;
+	    if (!cp_string(cp_shift_spacevec(str), &s))
+		return errh->error("syntax error");
+	    pf << *pct;
+	    result << ErrorHandler::xformat(pf.c_str(), s.c_str());
+	} else
+	    return errh->error("syntax error");
+	s = pct + 1;
+    }
+    if (str)
+	return errh->error("syntax error");
+    result << format.substring(s, pct);
+    str = result.take_string();
+    return 0;
+}
+
+int
+Script::basic_handler(int, String &str, Element *e, const Handler *h, ErrorHandler *errh)
 {
     int what = (uintptr_t) h->read_user_data();
 
@@ -802,163 +1082,6 @@ Script::arithmetic_handler(int, String &str, Element *e, const Handler *h, Error
     case AR_FIRST:
 	str = cp_shift_spacevec(str);
 	return 0;
-
-    case ar_add:
-    case ar_sub:
-    case ar_mul:
-    case ar_div:
-    case ar_idiv: {
-	click_intmax_t accum = (what == ar_add || what == ar_sub ? 0 : 1), arg;
-	bool first = true;
-#if CLICK_USERLEVEL
-	double daccum = (what == ar_add || what == ar_sub ? 0 : 1), darg;
-	bool use_daccum = (what == ar_div || what == ar_idiv);
-#endif
-	while (1) {
-	    String word = cp_shift_spacevec(str);
-	    if (!word && cp_is_space(str))
-		break;
-#if CLICK_USERLEVEL
-	    if (!use_daccum && !IntArg().parse(word, arg)) {
-		use_daccum = true;
-		daccum = accum;
-	    }
-	    if (use_daccum && !DoubleArg().parse(word, darg))
-		return errh->error("expected list of numbers");
-	    if (use_daccum) {
-		if (first)
-		    daccum = darg;
-		else if (what == ar_add)
-		    daccum += darg;
-		else if (what == ar_sub)
-		    daccum -= darg;
-		else if (what == ar_mul)
-		    daccum *= darg;
-		else
-		    daccum /= darg;
-		goto set_first;
-	    }
-#else
-	    if (!IntArg().parse(word, arg))
-		return errh->error("expected list of numbers");
-#endif
-	    if (first)
-		accum = arg;
-	    else if (what == ar_add)
-		accum += arg;
-	    else if (what == ar_sub)
-		accum -= arg;
-	    else if (what == ar_mul)
-		accum *= arg;
-	    else {
-#if CLICK_USERLEVEL || !HAVE_INT64_TYPES
-		accum /= arg;
-#else
-		// no int64 divide in the kernel
-		if (accum > 0x7FFFFFFF || arg > 0x7FFFFFFF)
-		    errh->warning("int64 divide truncated");
-		accum = (int32_t) accum / (int32_t) arg;
-#endif
-	    }
-#if CLICK_USERLEVEL
-	set_first:
-#endif
-	    first = false;
-	}
-#if CLICK_USERLEVEL
-	if (what == ar_idiv) {
-	    use_daccum = false;
-	    accum = (click_intmax_t) daccum;
-	}
-	str = (use_daccum ? String(daccum) : String(accum));
-#else
-	str = String(accum);
-#endif
-	return 0;
-    }
-
-    case ar_mod:
-    case ar_rem: {
-	String astr = cp_shift_spacevec(str), bstr = cp_shift_spacevec(str);
-	click_intmax_t a, b;
-	if (str || !astr || !bstr)
-	    goto expected_two_numbers;
-	if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b)) {
-#if CLICK_USERLEVEL
-	    double da, db;
-	    if (what == ar_mod || !DoubleArg().parse(astr, da)
-		|| !DoubleArg().parse(bstr, db))
-		goto expected_two_numbers;
-	    str = String(fmod(da, db));
-	    return 0;
-#else
-	    goto expected_two_numbers;
-#endif
-	} else {
-#if CLICK_LINUXMODULE
-	    if ((int32_t) a != a || (int32_t) b != b)
-		errh->warning("int64 divide truncated");
-	    a = (int32_t) a % (int32_t) b;
-#else
-	    a %= b;
-#endif
-	    str = String(a);
-	    return 0;
-	}
-    }
-
-    case ar_neg:
-    case ar_abs: {
-	click_intmax_t x;
-	if (!IntArg().parse(str, x)) {
-#if CLICK_USERLEVEL
-	    double dx;
-	    if (!DoubleArg().parse(str, dx))
-		goto expected_one_number;
-	    str = String(what == ar_neg ? -dx : fabs(dx));
-	    return 0;
-#else
-	    goto expected_one_number;
-#endif
-	} else {
-	    str = String(what == ar_neg || x < 0 ? -x : x);
-	    return 0;
-	}
-    }
-
-    case AR_LT:
-    case AR_EQ:
-    case AR_GT:
-    case AR_LE:
-    case AR_NE:
-    case AR_GE: {
-	String astr = cp_shift_spacevec(str), bstr = cp_shift_spacevec(str);
-	click_intmax_t a, b;
-	int comparison;
-	if (str || !astr || !bstr)
-	    goto expected_two_numbers;
-#if CLICK_USERLEVEL
-	if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b)) {
-	    double da, db;
-	    if (!DoubleArg().parse(astr, da) || !DoubleArg().parse(bstr, db))
-		goto compare_strings;
-	    comparison = (da < db ? AR_LT : (da == db ? AR_EQ : AR_GT));
-	    goto compare_return;
-	}
-#else
-	if (!IntArg().parse(astr, a) || !IntArg().parse(bstr, b))
-	    goto compare_strings;
-#endif
-	comparison = (a < b ? AR_LT : (a == b ? AR_EQ : AR_GT));
-    compare_return:
-	str = BoolArg::unparse(what == comparison
-			       || (what >= AR_GE && what != comparison + 3));
-	return 0;
-    compare_strings:
-	a = String::compare(cp_unquote(astr), cp_unquote(bstr));
-	comparison = (a < 0 ? AR_LT : (a == 0 ? AR_EQ : AR_GT));
-	goto compare_return;
-    }
 
     case AR_NOT: {
 	bool x;
@@ -1011,94 +1134,6 @@ Script::arithmetic_handler(int, String &str, Element *e, const Handler *h, Error
 	str = Timestamp::now().unparse();
 	return 0;
 
-    case AR_SPRINTF: {
-	String format = cp_unquote(cp_shift_spacevec(str));
-	const char *s = format.begin(), *pct, *end = format.end();
-	StringAccum result;
-	while ((pct = find(s, end, '%')) < end) {
-	    result << format.substring(s, pct);
-	    StringAccum pf;
-	    // flags
-	    do {
-		pf << *pct++;
-	    } while (pct < end && (*pct == '0' || *pct == '#'
-				|| *pct == '-' || *pct == ' ' || *pct == '+'));
-	    // field width
-	    int fw = 0;
-	    if (pct < end && *pct == '*') {
-		if (!IntArg().parse(cp_shift_spacevec(str), fw))
-		    return errh->error("syntax error");
-		pf << fw;
-	    } else
-		while (pct < end && *pct >= '0' && *pct <= '9')
-		    pf << *pct++;
-	    // precision
-	    if (pct < end && *pct == '.') {
-		pct++;
-		if (pct < end && *pct == '*') {
-		    if (!IntArg().parse(cp_shift_spacevec(str), fw) || fw < 0)
-			return errh->error("syntax error");
-		    pf << '.' << fw;
-		} else if (pct < end && *pct >= '0' && *pct <= '9') {
-		    pf << '.';
-		    while (pct < end && *pct >= '0' && *pct <= '9')
-			pf << *pct++;
-		}
-	    }
-	    // width
-	    int width_flag = 0;
-	    while (1) {
-		if (pct < end && *pct == 'h')
-		    width_flag = 'h', pct++;
-		else if (pct < end && *pct == 'l')
-		    width_flag = (width_flag == 'l' ? 'q' : 'l'), pct++;
-		else if (pct < end && (*pct == 'L' || *pct == 'q'))
-		    width_flag = 'q', pct++;
-		else
-		    break;
-	    }
-	    // conversion
-	    if (pct < end && (*pct == 'o' || *pct == 'x' || *pct == 'X' || *pct == 'u')) {
-		click_uintmax_t ival;
-		String x = cp_shift_spacevec(str);
-		if (!IntArg().parse(x, ival))
-		    return errh->error("syntax error");
-		if (width_flag == 'h')
-		    ival = (unsigned short) ival;
-		else if (width_flag == 0 || width_flag == 'l')
-		    ival = (unsigned long) ival;
-		pf << CLICK_INTMAX_CVT << *pct;
-		result << ErrorHandler::xformat(pf.c_str(), ival);
-	    } else if (pct < end && (*pct == 'd' || *pct == 'i')) {
-		click_intmax_t ival = 0;
-		if (!IntArg().parse(cp_shift_spacevec(str), ival))
-		    return errh->error("syntax error");
-		if (width_flag == 'h')
-		    ival = (short) ival;
-		else if (width_flag == 0 || width_flag == 'l')
-		    ival = (long) ival;
-		pf << CLICK_INTMAX_CVT << *pct;
-		result << ErrorHandler::xformat(pf.c_str(), ival);
-	    } else if (pct < end && *pct == '%') {
-		pf << '%';
-		result << ErrorHandler::xformat(pf.c_str());
-	    } else if (pct < end && *pct == 's') {
-		String s;
-		if (!cp_string(cp_shift_spacevec(str), &s))
-		    return errh->error("syntax error");
-		pf << *pct;
-		result << ErrorHandler::xformat(pf.c_str(), s.c_str());
-	    } else
-		return errh->error("syntax error");
-	    s = pct + 1;
-	}
-	if (str)
-	    return errh->error("syntax error");
-	result << format.substring(s, pct);
-	str = result.take_string();
-	return 0;
-    }
-
     case ar_random: {
 	if (!str)
 	    str = String(click_random());
@@ -1121,12 +1156,15 @@ Script::arithmetic_handler(int, String &str, Element *e, const Handler *h, Error
     }
 
 #if CLICK_USERLEVEL
-    case ar_cat: {
+    case ar_cat:
+    case ar_catq: {
 	String filename;
 	if (!FilenameArg().parse(str, filename))
 	    return errh->error("bad FILE");
 	int nerrors = errh->nerrors();
 	str = file_string(filename, errh);
+	if (what == ar_catq)
+	    str = cp_quote(str);
 	return (errh->nerrors() == nerrors ? 0 : -errno);
     }
 
@@ -1172,12 +1210,6 @@ Script::arithmetic_handler(int, String &str, Element *e, const Handler *h, Error
 	str = cp_unquote(str);
 	return 0;
 
-    expected_two_numbers:
-	return errh->error("expected two numbers");
-
-    expected_one_number:
-	return errh->error("expected one number");
-
     }
 
     return -1;
@@ -1209,34 +1241,35 @@ Script::add_handlers()
     set_handler("mul", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_mul, 0);
     set_handler("div", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_div, 0);
     set_handler("idiv", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_idiv, 0);
-    set_handler("mod", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_mod, 0);
-    set_handler("rem", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_rem, 0);
-    set_handler("neg", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_neg, 0);
-    set_handler("abs", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_abs, 0);
-    set_handler("eq", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_EQ, 0);
-    set_handler("ne", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_NE, 0);
-    set_handler("gt", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_GT, 0);
-    set_handler("ge", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_GE, 0);
-    set_handler("lt", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_LT, 0);
-    set_handler("le", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_LE, 0);
-    set_handler("not", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_NOT, 0);
-    set_handler("sprintf", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_SPRINTF, 0);
-    set_handler("first", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, AR_FIRST, 0);
-    set_handler("random", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_random, 0);
-    set_handler("and", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_and, 0);
-    set_handler("or", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_or, 0);
-    set_handler("nand", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_nand, 0);
-    set_handler("nor", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_nor, 0);
-    set_handler("if", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_if, 0);
-    set_handler("in", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_in, 0);
-    set_handler("now", Handler::OP_READ, arithmetic_handler, ar_now, 0);
-    set_handler("readable", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_readable, 0);
-    set_handler("writable", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_writable, 0);
-    set_handler("length", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_length, 0);
-    set_handler("unquote", Handler::OP_READ | Handler::READ_PARAM, arithmetic_handler, ar_unquote, 0);
+    set_handler("mod", Handler::OP_READ | Handler::READ_PARAM, modrem_handler, ar_mod, 0);
+    set_handler("rem", Handler::OP_READ | Handler::READ_PARAM, modrem_handler, ar_rem, 0);
+    set_handler("neg", Handler::OP_READ | Handler::READ_PARAM, negabs_handler, ar_neg, 0);
+    set_handler("abs", Handler::OP_READ | Handler::READ_PARAM, negabs_handler, ar_abs, 0);
+    set_handler("eq", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_EQ, 0);
+    set_handler("ne", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_NE, 0);
+    set_handler("gt", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_GT, 0);
+    set_handler("ge", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_GE, 0);
+    set_handler("lt", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_LT, 0);
+    set_handler("le", Handler::OP_READ | Handler::READ_PARAM, compare_handler, AR_LE, 0);
+    set_handler("not", Handler::OP_READ | Handler::READ_PARAM, basic_handler, AR_NOT, 0);
+    set_handler("sprintf", Handler::OP_READ | Handler::READ_PARAM, sprintf_handler, AR_SPRINTF, 0);
+    set_handler("first", Handler::OP_READ | Handler::READ_PARAM, basic_handler, AR_FIRST, 0);
+    set_handler("random", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_random, 0);
+    set_handler("and", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_and, 0);
+    set_handler("or", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_or, 0);
+    set_handler("nand", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_nand, 0);
+    set_handler("nor", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_nor, 0);
+    set_handler("if", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_if, 0);
+    set_handler("in", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_in, 0);
+    set_handler("now", Handler::OP_READ, basic_handler, ar_now, 0);
+    set_handler("readable", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_readable, 0);
+    set_handler("writable", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_writable, 0);
+    set_handler("length", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_length, 0);
+    set_handler("unquote", Handler::OP_READ | Handler::READ_PARAM, basic_handler, ar_unquote, 0);
 #if CLICK_USERLEVEL
-    set_handler("cat", Handler::OP_READ | Handler::READ_PARAM | Handler::READ_PRIVATE, arithmetic_handler, ar_cat, 0);
-    set_handler("kill", Handler::OP_READ | Handler::READ_PARAM | Handler::READ_PRIVATE, arithmetic_handler, ar_kill, 0);
+    set_handler("cat", Handler::OP_READ | Handler::READ_PARAM | Handler::READ_PRIVATE, basic_handler, ar_cat, 0);
+    set_handler("catq", Handler::OP_READ | Handler::READ_PARAM | Handler::READ_PRIVATE, basic_handler, ar_catq, 0);
+    set_handler("kill", Handler::OP_READ | Handler::READ_PARAM | Handler::READ_PRIVATE, basic_handler, ar_kill, 0);
 #endif
     if (_type == type_proxy)
 	add_write_handler("*", star_write_handler, 0);
